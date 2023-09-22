@@ -2,9 +2,11 @@
 // Created by iphelf on 2023-09-22.
 //
 
-#include <iostream>
+#include <cassert>
 #include <thread>
 
 int main() {
-  std::thread{[] { std::cout << "Hello, world!\n"; }}.join();
+  static bool hello{false};
+  std::thread{[] { hello = true; }}.join();
+  assert(hello);
 }
