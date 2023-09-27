@@ -1,0 +1,7 @@
+add_executable(ch03-threadsafe_stack threadsafe_stack.cpp)
+add_executable(ch03-swap_wo_deadlock swap_wo_deadlock.cpp)
+add_executable(ch03-hierarchical_mutex hierarchical_mutex.cpp)
+add_executable(ch03-accessor_with_lock accessor_with_lock.cpp)
+add_executable(ch03-initialization initialization.cpp)
+add_executable(ch03-reader_writer reader_writer.cpp)
+add_executable(ch03-recursive_mutex recursive_mutex.cpp)
