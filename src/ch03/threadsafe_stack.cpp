@@ -11,7 +11,7 @@
 
 template <typename T>
 class threadsafe_stack {
-  std::mutex mutex{};
+  mutable std::mutex mutex{};
   std::stack<T> data{};
   int n_log{0};
   void log() {
@@ -22,16 +22,16 @@ class threadsafe_stack {
  public:
   threadsafe_stack() = default;
   threadsafe_stack(const threadsafe_stack &rhs) {
-    std::lock_guard guard{mutex};  // necessary?
+    std::lock_guard guard{rhs.mutex};
     data = rhs.data;
   }
   threadsafe_stack &operator=(const threadsafe_stack &) = delete;
   threadsafe_stack(threadsafe_stack &&) = delete;
   threadsafe_stack &operator=(threadsafe_stack &&) = delete;
-  std::shared_ptr<T> pop() {
+  std::unique_ptr<T> pop() {
     std::lock_guard guard{mutex};
     if (data.empty()) return nullptr;
-    auto popped{std::make_shared<T>(data.top())};
+    auto popped{std::make_unique<T>(data.top())};
     data.pop();
     log();
     return popped;
@@ -48,6 +48,10 @@ class threadsafe_stack {
     std::lock_guard guard{mutex};
     data.push(std::move(item));
     log();
+  }
+  [[nodiscard]] bool empty() const {
+    std::lock_guard guard{mutex};
+    return data.empty();
   }
 };
 
@@ -76,7 +80,7 @@ int main() {
         for (int j{0}; j < n_items; ++j) {
           stack.push(j);
           content += j;
-          std::shared_ptr<int> result;
+          std::unique_ptr<int> result;
           while (true) {
             result = stack.pop();
             if (result) break;
@@ -92,6 +96,6 @@ int main() {
     thread.join();
   }
   assert(threads.empty());
-  assert(!stack.pop());
+  assert(stack.empty());
   assert(content == 0);
 }
