@@ -1,0 +1,5 @@
+add_executable(ch06-threadsafe_stack ../ch03/threadsafe_stack.cpp)
+add_executable(ch06-threadsafe_queue ../ch04/threadsafe_queue.cpp)
+add_executable(ch06-threadsafe_linked_queue threadsafe_linked_queue.cpp)
+add_executable(ch06-threadsafe_lookup_table threadsafe_lookup_table.cpp)
+add_executable(ch06-threadsafe_forward_list threadsafe_forward_list.cpp)

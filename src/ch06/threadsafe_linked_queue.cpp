@@ -1,71 +1,64 @@
 //
-// Created by iphelf on 2023-09-29.
+// Created by iphelf on 2023-11-02.
 //
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <condition_variable>
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <thread>
+#include <vector>
 
 const bool dump_records{false};
 
 template <typename T>
-class threadsafe_queue {
-  std::queue<T> data{};
-  mutable std::mutex mutex{};
-  std::condition_variable cond{};
+class threadsafe_linked_queue {
+  struct node {
+    std::shared_ptr<T> data{nullptr};
+    std::unique_ptr<node> next{nullptr};
+  };
+
+  std::unique_ptr<node> head{std::make_unique<node>()};
+  node *tail{head.get()};
+  std::mutex head_mutex;
+  std::mutex tail_mutex;
+  std::condition_variable cond;
+
+  node *get_tail() {
+    std::scoped_lock lock{tail_mutex};
+    return tail;
+  }
+  std::shared_ptr<T> pop_head(std::unique_lock<std::mutex> &&lock) {
+    std::unique_ptr<node> popped = std::move(head);
+    head = std::move(popped->next);
+    return popped->data;
+  }
 
  public:
-  threadsafe_queue() = default;
-  threadsafe_queue(const threadsafe_queue &rhs) {
-    std::lock_guard lock{rhs.mutex};
-    data = rhs.data;
-  }
-  threadsafe_queue &operator=(const threadsafe_queue &) = delete;
-  threadsafe_queue(threadsafe_queue &&) = delete;
-  threadsafe_queue &operator=(threadsafe_queue &&) = delete;
-  bool empty() const {
-    std::lock_guard lock{mutex};
-    return data.empty();
-  }
-  void push(T item) {
+  void push(std::shared_ptr<T> item) {
     {
-      std::lock_guard lock{mutex};
-      data.push(std::move(item));
+      std::scoped_lock lock{tail_mutex};
+      tail->data = item;
+      tail->next = std::make_unique<node>();
+      tail = tail->next.get();
     }
     cond.notify_one();
   }
-  bool try_pop(T &recipient) {
-    std::lock_guard lock{mutex};
-    if (data.empty()) return false;
-    recipient = std::move(data.front());
-    data.pop();
-    return true;
+  std::shared_ptr<T> try_pop() {
+    std::scoped_lock lock{head_mutex};
+    if (head.get() == get_tail()) return nullptr;
+    return pop_head(std::move(lock));
   }
-  std::unique_ptr<T> try_pop() {
-    std::lock_guard lock{mutex};
-    if (data.empty()) return nullptr;
-    auto popped{std::make_unique<T>(std::move(data.front()))};
-    data.pop();
-    return popped;
+  std::shared_ptr<T> wait_and_pop() {
+    std::unique_lock lock{head_mutex};
+    cond.wait(lock, [this] { return head.get() != get_tail(); });
+    return pop_head(std::move(lock));
   }
-  void wait_and_pop(T &recipient) {
-    std::unique_lock lock{mutex};
-    cond.wait(lock, [this] { return !data.empty(); });
-    recipient = std::move(data.front());
-    data.pop();
-  }
-  std::unique_ptr<T> wait_and_pop() {
-    std::unique_lock lock{mutex};
-    cond.wait(lock, [this] { return !data.empty(); });
-    auto popped{std::make_unique<T>(std::move(data.front()))};
-    data.pop();
-    return popped;
+  bool empty() {
+    std::scoped_lock lock{head_mutex};
+    return head.get() == get_tail();
   }
 };
 
@@ -90,7 +83,7 @@ int main() {
   const std::chrono::microseconds time_to_consume{time_to_produce *
                                                   n_consumers};
   const int stop_item{-1};
-  threadsafe_queue<int> queue;
+  threadsafe_linked_queue<int> queue;
   std::vector<std::thread> consumers;
   std::vector<std::vector<record>> consumers_records(n_consumers + 1);
   std::atomic<int> n_blocked{0};
@@ -105,30 +98,20 @@ int main() {
     consumers.emplace_back([&, i_consumer] {
       auto process{[&](int i) {
         auto b{get_relative_time()};
+        decltype(b) x;
         std::this_thread::sleep_for(time_to_consume);
         if constexpr (dump_records) {
           consumers_records[i_consumer].push_back(
               {b, get_relative_time(), i, i_consumer});
         }
       }};
-      if (i_consumer % 2 == 0) {
-        int item;
-        while (true) {
-          ++n_blocked;
-          queue.wait_and_pop(item);
-          --n_blocked;
-          if (item == stop_item) break;
-          process(item);
-        }
-      } else {
-        std::unique_ptr<int> item;
-        while (true) {
-          ++n_blocked;
-          item = queue.wait_and_pop();
-          --n_blocked;
-          if (*item == stop_item) break;
-          process(*item);
-        }
+      std::shared_ptr<int> item;
+      while (true) {
+        ++n_blocked;
+        item = queue.wait_and_pop();
+        --n_blocked;
+        if (*item == stop_item) break;
+        process(*item);
       }
     });
 
@@ -139,7 +122,7 @@ int main() {
     auto &producer_records{consumers_records[n_consumers]};
     for (int i{0}; i < n_items; ++i) {
       auto b{get_relative_time()};
-      queue.push(i);
+      queue.push(std::make_shared<int>(i));
       std::this_thread::sleep_for(time_to_produce);
       if constexpr (dump_records) {
         producer_records.push_back({b, get_relative_time(), i, n_consumers});
@@ -148,12 +131,11 @@ int main() {
   }
 
   auto producing_end_time{std::chrono::system_clock::now()};
-  for (int i{0}; i < n_consumers; ++i) queue.push(stop_item);
+  for (int i{0}; i < n_consumers; ++i)
+    queue.push(std::make_shared<int>(stop_item));
   for (auto &consumer : consumers) consumer.join();
   auto offset{std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::system_clock::now() - producing_end_time)};
-  assert(offset < time_to_consume);
-  assert(queue.empty());
 
   if constexpr (dump_records) {
     std::cout << "df = pd.DataFrame([\n";
@@ -170,4 +152,6 @@ int main() {
     }
     std::cout << "])\n";
   }
+
+  assert(queue.empty());
 }
